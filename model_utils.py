@@ -115,7 +115,7 @@ class PokemonFeatureExtractor(nn.Module):
         if not Path(model_path).exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
-        state_dict = torch.load(model_path, map_location=DEVICE)
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
         # Load only the feature extractor weights
         self.load_state_dict(state_dict, strict=False)
         print(f"✅ Loaded model weights from {model_path}")
