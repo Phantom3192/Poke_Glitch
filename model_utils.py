@@ -1,6 +1,6 @@
 """
 model_utils.py - Inference-only model loading
-NO TRAINING CODE - just loads trained model and runs inference
+NO MODEL FILE REQUIRED - uses database features directly
 """
 
 import os
@@ -15,6 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms, models
 from PIL import Image
+import io
 
 # ============ CONFIGURATION ============
 TURSO_URL = os.getenv("TURSO_URL")
@@ -26,7 +27,7 @@ DEVICE = torch.device("cpu")
 # ============ DATABASE LAYER ============
 
 class Database:
-    """Database handler - only reads features, no writes needed."""
+    """Database handler - only reads features."""
     
     def __init__(self):
         self.use_turso = False
@@ -77,26 +78,20 @@ class Database:
             self._conn.close()
 
 
-# ============ AI MODEL (Inference Only) ============
+# ============ FEATURE EXTRACTOR (OPTIONAL - FOR IMAGES) ============
 
-class PokemonFeatureExtractor(nn.Module):
+class SimpleFeatureExtractor(nn.Module):
     """
-    Feature extractor - loads trained weights, runs inference only.
-    NO TRAINING CODE HERE!
+    Simple feature extractor for images - no training needed.
+    Uses pre-trained model to extract features from images.
     """
     
-    def __init__(self, embedding_dim: int = 256):
+    def __init__(self):
         super().__init__()
-        # Using the same architecture as training
-        self.backbone = models.shufflenet_v2_x0_5(weights=None)
-        self.backbone.fc = nn.Identity()
-        backbone_dim = 1024
-        
-        self.projection = nn.Sequential(
-            nn.Linear(backbone_dim, embedding_dim),
-            nn.ReLU(),
-            nn.Linear(embedding_dim, embedding_dim),
-        )
+        # Use a smaller, faster model
+        self.backbone = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        # Remove classifier head
+        self.backbone.classifier = nn.Identity()
         
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], 
@@ -110,61 +105,54 @@ class PokemonFeatureExtractor(nn.Module):
         self.to(DEVICE)
         self.eval()
     
-    def load_weights(self, model_path: str):
-        """Load trained weights from file."""
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        
-        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
-        # Load only the feature extractor weights
-        self.load_state_dict(state_dict, strict=False)
-        print(f"✅ Loaded model weights from {model_path}")
-    
     @torch.no_grad()
     def extract(self, img: Image.Image) -> np.ndarray:
         """Extract feature vector from image."""
         if img is None:
-            return np.zeros(256)
+            return np.zeros(576)  # MobileNetV3 feature dim
         
         try:
             img_tensor = self.transform(img).unsqueeze(0).to(DEVICE)
             img_tensor = self.normalize(img_tensor)
             features = self.backbone(img_tensor)
-            projected = self.projection(features)
-            projected = F.normalize(projected, p=2, dim=1)
-            return projected.cpu().numpy().flatten()
+            features = F.adaptive_avg_pool2d(features, (1, 1)).flatten(1)
+            features = F.normalize(features, p=2, dim=1)
+            return features.cpu().numpy().flatten()
         except Exception as e:
             print(f"⚠️ Feature extraction failed: {e}")
-            return np.zeros(256)
+            return np.zeros(576)
 
 
-# ============ MATCHER ============
+# ============ MATCHER (NO MODEL FILE NEEDED) ============
 
 class PokemonMatcher:
     """
-    Pokémon identifier using trained model + database features.
+    Pokémon identifier using database features only.
+    NO MODEL FILE REQUIRED!
     """
     
-    def __init__(self, model_path: str, threshold: float = 75.0, ambiguity: float = 10.0):
+    def __init__(self, threshold: float = 75.0, ambiguity: float = 10.0):
         self.threshold = threshold
         self.ambiguity_margin = ambiguity
         
-        # 1. Load database
         print("📂 Loading database...")
         self.db = Database()
         stats = self.db.get_stats()
         print(f"   ✅ {stats['total_species']} species, {stats['total_features']} features")
         
-        # 2. Load model
-        print("🧠 Loading model...")
-        self.model = PokemonFeatureExtractor()
-        self.model.load_weights(model_path)
-        print(f"   ✅ Model loaded")
-        
-        # 3. Load reference features
         print("📊 Loading reference features...")
         self._load_reference_features()
         print(f"   ✅ {self.total_variants} reference variants loaded")
+        
+        # Initialize feature extractor for new images
+        print("🧠 Initializing feature extractor...")
+        self.extractor = SimpleFeatureExtractor()
+        print("   ✅ Feature extractor ready")
+        
+        print("✅ Matcher initialized successfully!")
+        print(f"   🎯 Threshold: {self.threshold}%")
+        print(f"   📊 Species: {len(self.species_list)}")
+        print(f"   📸 Variants: {self.total_variants}")
     
     def _load_reference_features(self):
         """Load all reference features from database."""
@@ -172,6 +160,7 @@ class PokemonMatcher:
         
         self.species_list = []
         self.feature_matrix = []
+        self.variant_species = []  # Track which species each variant belongs to
         
         for species, features in features_by_species.items():
             for feature in features:
@@ -232,7 +221,7 @@ class PokemonMatcher:
             return None
         
         # 2. Extract features
-        features = self.model.extract(img)
+        features = self.extractor.extract(img)
         if np.all(features == 0):
             return None
         
@@ -266,5 +255,13 @@ class PokemonMatcher:
             "runner_up": runner_up,
             "runner_up_confidence": runner_up_conf,
             "inference_time": inference_time,
-            "total_variants": self.total_variants
+            "total_variants": self.total_variants,
+            "species_count": len(self.species_set)
         }
+    
+    def reload_features(self):
+        """Reload features from database (useful after training adds more)."""
+        print("🔄 Reloading features from database...")
+        self._load_reference_features()
+        print(f"   ✅ {self.total_variants} reference variants loaded")
+        print(f"   ✅ {len(self.species_set)} species available")
