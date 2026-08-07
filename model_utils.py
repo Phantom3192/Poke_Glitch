@@ -82,7 +82,8 @@ class Database:
 
 class SimpleFeatureExtractor(nn.Module):
     """
-    Simple feature extractor for images - with better error handling.
+    Simple feature extractor for images.
+    ALWAYS converts to RGB first!
     """
     
     def __init__(self):
@@ -104,14 +105,15 @@ class SimpleFeatureExtractor(nn.Module):
     
     @torch.no_grad()
     def extract(self, img: Image.Image) -> np.ndarray:
-        """Extract feature vector from image with better error handling."""
+        """Extract feature vector from image - ALWAYS RGB."""
         if img is None:
             print("⚠️ Image is None")
             return np.zeros(576)
         
         try:
-            # Ensure image is RGB
+            # 🔥 CRITICAL FIX: ALWAYS convert to RGB first
             if img.mode != 'RGB':
+                print(f"   Converting image from {img.mode} to RGB")
                 img = img.convert('RGB')
             
             # Check image size
@@ -132,7 +134,7 @@ class SimpleFeatureExtractor(nn.Module):
             return np.zeros(576)
 
 
-# ============ MATCHER (FIXED) ============
+# ============ MATCHER ============
 
 class PokemonMatcher:
     """
@@ -214,11 +216,11 @@ class PokemonMatcher:
         return results
     
     def identify(self, image_bytes: bytes) -> Optional[Dict]:
-        """Identify a Pokémon from image bytes with better error handling."""
+        """Identify a Pokémon from image bytes."""
         import time
         start_time = time.time()
         
-        # 1. Load image with better error handling
+        # 1. Load image
         try:
             img = Image.open(io.BytesIO(image_bytes))
             
@@ -227,9 +229,7 @@ class PokemonMatcher:
                 print("⚠️ Failed to load image: Image is None")
                 return None
             
-            # Ensure RGB
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+            # 🔥 The extractor will handle RGB conversion internally
             
             # Check image size
             if img.size[0] < 10 or img.size[1] < 10:
