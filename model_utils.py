@@ -124,8 +124,10 @@ class SimpleFeatureExtractor(nn.Module):
             # Transform and extract
             img_tensor = self.transform(img).unsqueeze(0).to(DEVICE)
             img_tensor = self.normalize(img_tensor)
+            # mobilenet_v3_small already pools+flattens internally when
+            # classifier is Identity(), so `features` here is (N, 576) — no
+            # extra spatial pooling needed (that caused the dim-mismatch bug).
             features = self.backbone(img_tensor)
-            features = F.adaptive_avg_pool2d(features, (1, 1)).flatten(1)
             features = F.normalize(features, p=2, dim=1)
             return features.cpu().numpy().flatten()
             
