@@ -78,19 +78,16 @@ class Database:
             self._conn.close()
 
 
-# ============ FEATURE EXTRACTOR (OPTIONAL - FOR IMAGES) ============
+# ============ FEATURE EXTRACTOR (FIXED) ============
 
 class SimpleFeatureExtractor(nn.Module):
     """
-    Simple feature extractor for images - no training needed.
-    Uses pre-trained model to extract features from images.
+    Simple feature extractor for images - with better error handling.
     """
     
     def __init__(self):
         super().__init__()
-        # Use a smaller, faster model
         self.backbone = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
-        # Remove classifier head
         self.backbone.classifier = nn.Identity()
         
         self.normalize = transforms.Normalize(
@@ -107,23 +104,35 @@ class SimpleFeatureExtractor(nn.Module):
     
     @torch.no_grad()
     def extract(self, img: Image.Image) -> np.ndarray:
-        """Extract feature vector from image."""
+        """Extract feature vector from image with better error handling."""
         if img is None:
-            return np.zeros(576)  # MobileNetV3 feature dim
+            print("⚠️ Image is None")
+            return np.zeros(576)
         
         try:
+            # Ensure image is RGB
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Check image size
+            if img.size[0] < 10 or img.size[1] < 10:
+                print(f"⚠️ Image too small: {img.size}")
+                return np.zeros(576)
+            
+            # Transform and extract
             img_tensor = self.transform(img).unsqueeze(0).to(DEVICE)
             img_tensor = self.normalize(img_tensor)
             features = self.backbone(img_tensor)
             features = F.adaptive_avg_pool2d(features, (1, 1)).flatten(1)
             features = F.normalize(features, p=2, dim=1)
             return features.cpu().numpy().flatten()
+            
         except Exception as e:
             print(f"⚠️ Feature extraction failed: {e}")
             return np.zeros(576)
 
 
-# ============ MATCHER (NO MODEL FILE NEEDED) ============
+# ============ MATCHER (FIXED) ============
 
 class PokemonMatcher:
     """
@@ -144,7 +153,6 @@ class PokemonMatcher:
         self._load_reference_features()
         print(f"   ✅ {self.total_variants} reference variants loaded")
         
-        # Initialize feature extractor for new images
         print("🧠 Initializing feature extractor...")
         self.extractor = SimpleFeatureExtractor()
         print("   ✅ Feature extractor ready")
@@ -160,7 +168,6 @@ class PokemonMatcher:
         
         self.species_list = []
         self.feature_matrix = []
-        self.variant_species = []  # Track which species each variant belongs to
         
         for species, features in features_by_species.items():
             for feature in features:
@@ -207,15 +214,28 @@ class PokemonMatcher:
         return results
     
     def identify(self, image_bytes: bytes) -> Optional[Dict]:
-        """Identify a Pokémon from image bytes."""
+        """Identify a Pokémon from image bytes with better error handling."""
         import time
         start_time = time.time()
         
-        # 1. Load image
+        # 1. Load image with better error handling
         try:
             img = Image.open(io.BytesIO(image_bytes))
+            
+            # Check if image is valid
+            if img is None:
+                print("⚠️ Failed to load image: Image is None")
+                return None
+            
+            # Ensure RGB
             if img.mode != 'RGB':
                 img = img.convert('RGB')
+            
+            # Check image size
+            if img.size[0] < 10 or img.size[1] < 10:
+                print(f"⚠️ Image too small: {img.size}")
+                return None
+                
         except Exception as e:
             print(f"⚠️ Failed to load image: {e}")
             return None
@@ -223,11 +243,13 @@ class PokemonMatcher:
         # 2. Extract features
         features = self.extractor.extract(img)
         if np.all(features == 0):
+            print("⚠️ Feature extraction returned zeros")
             return None
         
         # 3. Compute similarities
         results = self._compute_similarity(features)
         if not results:
+            print("⚠️ No similarity results")
             return None
         
         # 4. Get best match
