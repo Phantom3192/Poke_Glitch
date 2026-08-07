@@ -289,7 +289,6 @@ async def set_threshold(ctx: commands.Context, value: float = None):
         await ctx.send("❌ Threshold must be between 0 and 100")
         return
     
-    global MATCH_THRESHOLD
     MATCH_THRESHOLD = value
     if matcher:
         matcher.threshold = value
