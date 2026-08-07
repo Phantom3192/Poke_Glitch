@@ -63,12 +63,23 @@ async def get_session() -> aiohttp.ClientSession:
 
 
 async def download_image(url: str) -> Optional[bytes]:
-    """Download image from URL."""
+    """Download image from URL with better error handling."""
     sess = await get_session()
     try:
         async with sess.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status == 200:
-                return await resp.read()
+                data = await resp.read()
+                # Verify it's a valid image
+                try:
+                    with Image.open(io.BytesIO(data)) as img:
+                        if img.size[0] > 10 and img.size[1] > 10:
+                            return data
+                        else:
+                            log.warning(f"Image too small: {img.size}")
+                            return None
+                except Exception as e:
+                    log.warning(f"Invalid image data: {e}")
+                    return None
             return None
     except Exception as e:
         log.warning(f"Image download failed: {e}")
@@ -76,7 +87,7 @@ async def download_image(url: str) -> Optional[bytes]:
 
 
 def extract_spawn_image(message: discord.Message) -> Optional[str]:
-    """Extract image URL from spawn message."""
+    """Extract image URL from spawn message - prefers full image over thumbnail."""
     for embed in message.embeds:
         title = (embed.title or "").lower()
         footer = (embed.footer.text or "").lower() if embed.footer else ""
@@ -84,11 +95,20 @@ def extract_spawn_image(message: discord.Message) -> Optional[str]:
         combined = f"{title} {description} {footer}"
         
         if "wild" in combined and "appeared" in combined:
+            # Prefer full image over thumbnail
             if embed.image and embed.image.url:
                 return embed.image.url
             if embed.thumbnail and embed.thumbnail.url:
-                return embed.thumbnail.url
+                # Get the thumbnail URL
+                url = embed.thumbnail.url
+                # Try to get the full image from thumbnail URL
+                # Many bots use different URL patterns
+                if "cdn.discordapp.com" in url:
+                    # Replace size parameter if present
+                    return url
+                return url
     
+    # Check attachments (these are always full images)
     for att in message.attachments:
         if att.content_type and att.content_type.startswith("image/"):
             return att.url
@@ -138,18 +158,25 @@ async def on_message(message: discord.Message):
     if message.author.id == POKETWO_BOT_ID:
         image_url = extract_spawn_image(message)
         if image_url:
+            log.info(f"Spawn detected from {message.author}")
             await process_spawn(message, image_url)
 
 
 async def process_spawn(message: discord.Message, image_url: str):
     """Process a spawn message with AI identification."""
     if matcher is None:
+        log.warning("Matcher not initialized")
         return
+    
+    log.info(f"Processing spawn: {image_url[:100]}...")
     
     # Download image
     image_bytes = await download_image(image_url)
     if not image_bytes:
+        log.warning("Failed to download image")
         return
+    
+    log.info(f"Image downloaded: {len(image_bytes)} bytes")
     
     # Identify
     try:
@@ -158,7 +185,12 @@ async def process_spawn(message: discord.Message, image_url: str):
         log.error(f"Identification failed: {e}")
         return
     
-    if result is None or not result["confident"]:
+    if result is None:
+        log.info("No match found")
+        return
+    
+    if not result["confident"]:
+        log.info(f"Not confident: {result['species']} at {result['confidence']:.1f}%")
         return
     
     # Build reply
@@ -167,6 +199,7 @@ async def process_spawn(message: discord.Message, image_url: str):
     # Send reply
     try:
         await message.reply(reply, allowed_mentions=discord.AllowedMentions.none())
+        log.info(f"Replied with {result['species']}")
     except discord.HTTPException as e:
         log.warning(f"Failed to reply: {e}")
 
@@ -181,33 +214,42 @@ async def predict_match(ctx: commands.Context):
         return
     
     image_bytes = None
+    image_url = None
     
     # Check attachments
     for att in ctx.message.attachments:
         if att.content_type and att.content_type.startswith("image/"):
             try:
                 image_bytes = await att.read()
+                log.info(f"Got image from attachment: {len(image_bytes)} bytes")
                 break
-            except Exception:
-                continue
+            except Exception as e:
+                await ctx.send(f"⚠️ Failed to read attachment: {e}")
+                return
     
     # Check replied message
     if image_bytes is None and ctx.message.reference:
         try:
             replied = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            # Check attachments
             for att in replied.attachments:
                 if att.content_type and att.content_type.startswith("image/"):
                     try:
                         image_bytes = await att.read()
+                        log.info(f"Got image from replied attachment: {len(image_bytes)} bytes")
                         break
                     except Exception:
                         continue
+            
+            # Check embed image
             if image_bytes is None:
                 image_url = extract_spawn_image(replied)
                 if image_url:
+                    log.info(f"Got image URL from replied message: {image_url[:100]}...")
                     image_bytes = await download_image(image_url)
-        except Exception:
-            pass
+        except Exception as e:
+            await ctx.send(f"⚠️ Failed to get replied message: {e}")
+            return
     
     if image_bytes is None:
         await ctx.send("⚠️ Please attach an image or reply to a message with an image.")
