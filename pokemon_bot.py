@@ -1,5 +1,6 @@
 """
 pokemon_bot.py - Discord bot using trained AI model
+NO MODEL FILE REQUIRED!
 """
 
 import os
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 import aiohttp
 from PIL import Image
 
-# Import ONLY inference code - no training!
+# Import inference code - no model file needed!
 from model_utils import PokemonMatcher
 
 load_dotenv()
@@ -33,7 +34,6 @@ if not DISCORD_TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN not set!")
 
 POKETWO_BOT_ID = int(os.getenv("POKETWO_BOT_ID", "716390085896962058"))
-MODEL_PATH = os.getenv("MODEL_OUTPUT", "models/pokemon_classifier.pt")
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "75.0"))
 AMBIGUITY_MARGIN = float(os.getenv("AMBIGUITY_MARGIN", "10.0"))
 
@@ -111,11 +111,12 @@ async def on_ready():
     log.info("🔄 Initializing AI matcher...")
     try:
         matcher = PokemonMatcher(
-            model_path=MODEL_PATH,
             threshold=MATCH_THRESHOLD,
             ambiguity=AMBIGUITY_MARGIN
         )
         log.info("✅ AI matcher ready!")
+        log.info(f"   Species: {len(matcher.species_set)}")
+        log.info(f"   Variants: {matcher.total_variants}")
     except Exception as e:
         log.error(f"❌ Failed to initialize matcher: {e}")
         return
@@ -246,6 +247,7 @@ async def predict_match(ctx: commands.Context):
     
     embed.add_field(name="Threshold", value=f"{MATCH_THRESHOLD}%", inline=True)
     embed.add_field(name="Inference Time", value=f"{result['inference_time']:.0f}ms", inline=True)
+    embed.add_field(name="Species Available", value=str(result["species_count"]), inline=True)
     embed.add_field(name="Reference Images", value=str(result["total_variants"]), inline=True)
     
     await ctx.send(embed=embed)
@@ -268,18 +270,34 @@ async def show_stats(ctx: commands.Context):
     embed.add_field(name="Species in Database", value=str(stats['total_species']), inline=True)
     embed.add_field(name="Reference Images", value=str(stats['total_features']), inline=True)
     embed.add_field(name="Match Threshold", value=f"{MATCH_THRESHOLD}%", inline=True)
+    embed.add_field(name="Loaded Species", value=str(len(matcher.species_set)), inline=True)
     embed.add_field(name="Loaded Variants", value=str(matcher.total_variants), inline=True)
+    embed.add_field(name="Model File", value="❌ Not required (using database only)", inline=False)
     
     await ctx.send(embed=embed)
+
+
+@bot.command(name="reload")
+@commands.is_owner()
+async def reload_features(ctx: commands.Context):
+    """Reload features from database (after training adds more)."""
+    if matcher is None:
+        await ctx.send("❌ AI matcher not ready yet!")
+        return
+    
+    await ctx.send("🔄 Reloading features from database...")
+    try:
+        await asyncio.to_thread(matcher.reload_features)
+        await ctx.send(f"✅ Reloaded! {len(matcher.species_set)} species, {matcher.total_variants} variants")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to reload: {e}")
 
 
 @bot.command(name="threshold")
 @commands.is_owner()
 async def set_threshold(ctx: commands.Context, value: float = None):
-    
     """Set the match threshold."""
-    
-    global MATCH_THRESHOLD 
+    global MATCH_THRESHOLD
     
     if value is None:
         await ctx.send(f"Current threshold: **{MATCH_THRESHOLD}%**")
@@ -315,6 +333,11 @@ async def show_help(ctx: commands.Context):
         inline=False
     )
     embed.add_field(
+        name="p!reload",
+        value="Reload features from database (after training adds more). (Bot owner only)",
+        inline=False
+    )
+    embed.add_field(
         name="p!threshold",
         value="Show or set match threshold. (Bot owner only)",
         inline=False
@@ -325,7 +348,7 @@ async def show_help(ctx: commands.Context):
         inline=False
     )
     
-    embed.set_footer(text=f"Threshold: {MATCH_THRESHOLD}%")
+    embed.set_footer(text=f"Threshold: {MATCH_THRESHOLD}% | Model: Not required")
     
     await ctx.send(embed=embed)
 
