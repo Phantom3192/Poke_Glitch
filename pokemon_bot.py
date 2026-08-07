@@ -276,7 +276,11 @@ async def show_stats(ctx: commands.Context):
 @bot.command(name="threshold")
 @commands.is_owner()
 async def set_threshold(ctx: commands.Context, value: float = None):
+    
     """Set the match threshold."""
+    
+    global MATCH_THRESHOLD 
+    
     if value is None:
         await ctx.send(f"Current threshold: **{MATCH_THRESHOLD}%**")
         return
